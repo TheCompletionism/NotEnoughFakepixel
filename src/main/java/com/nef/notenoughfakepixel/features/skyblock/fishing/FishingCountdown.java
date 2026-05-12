@@ -51,6 +51,13 @@ public class FishingCountdown {
     private long slugLavaEntryMs = 0;
     private static final long SLUG_DELAY_MS = 20_000;
 
+    // Splash confirmation: non-zero while waiting for a bite splash near the bobber
+    private long awaitingSplashUntilMs = 0;
+    private long splashConfirmedMs = 0;
+    private boolean biteAlertFired = false;
+    private static final long SPLASH_WINDOW_MS = 500;
+    private static final long BITE_ALERT_DELAY_MS = 50;
+
     public enum WarningState { NOTHING, INCOMING, HOOKED }
     private WarningState warningState = WarningState.NOTHING;
 
@@ -133,11 +140,19 @@ public class FishingCountdown {
             pingDelayTicks = (int) Math.floor((total / (double) pingDelayList.size()) / 50.0);
         }
 
+        // Fire bite alert after splash confirmation delay
+        if (splashConfirmedMs > 0 && !biteAlertFired && System.currentTimeMillis() >= splashConfirmedMs && !isSlugWaiting()) {
+            SoundUtils.playGlobalSound("note.pling", 1.0f, 2.0f);
+            biteAlertFired = true;
+            splashConfirmedMs = 0;
+        }
+
         // Advance warning state
         if (hookedStateTicks > 0) {
             hookedStateTicks--;
             warningState = WarningState.HOOKED;
         } else {
+            awaitingSplashUntilMs = 0;
             warningState = WarningState.NOTHING;
             if (mc.thePlayer.fishEntity != null) {
                 int myId = mc.thePlayer.fishEntity.getEntityId();
@@ -177,6 +192,24 @@ public class FishingCountdown {
         lastProcessedPacket = p;
 
         EnumParticleTypes type = p.getParticleType();
+
+        // Splash confirmation: after the approach condition fires, wait for a bite splash near our bobber.
+        // Water bite: WATER_BUBBLE. Lava bite: LAVA only (FLAME is also an approach particle and fires too early).
+        if (awaitingSplashUntilMs > 0 && !biteAlertFired
+                && (type == EnumParticleTypes.WATER_BUBBLE || type == EnumParticleTypes.LAVA)
+                && mc.thePlayer != null && mc.thePlayer.fishEntity != null) {
+            if (System.currentTimeMillis() <= awaitingSplashUntilMs) {
+                double dx = p.getXCoordinate() - mc.thePlayer.fishEntity.posX;
+                double dy = p.getYCoordinate() - mc.thePlayer.fishEntity.posY;
+                double dz = p.getZCoordinate() - mc.thePlayer.fishEntity.posZ;
+                if (dx * dx + dy * dy + dz * dz <= 1.0) {
+                    splashConfirmedMs = System.currentTimeMillis() + BITE_ALERT_DELAY_MS;
+                    awaitingSplashUntilMs = 0;
+                }
+            } else {
+                awaitingSplashUntilMs = 0;
+            }
+        }
         if (type != EnumParticleTypes.WATER_WAKE
                 && type != EnumParticleTypes.SMOKE_NORMAL
                 && type != EnumParticleTypes.FLAME) return;
@@ -244,7 +277,8 @@ public class FishingCountdown {
                     float lavaOff = (type == EnumParticleTypes.SMOKE_NORMAL) ? 0.03f : 0.1f;
                     if (newDist <= 0.2f + lavaOff * pingDelayTicks) {
                         if (hookedStateTicks <= 0 && !isSlugWaiting()) {
-                            SoundUtils.playGlobalSound("note.pling", 1.0f, 2.0f);
+                            awaitingSplashUntilMs = now + SPLASH_WINDOW_MS;
+                            biteAlertFired = false;
                         }
                         hookedStateTicks = 12;
                     } else if (newDist >= 0.4f + 0.1f * pingDelayTicks && buildupSoundDelay <= 0 && !isSlugWaiting()) {
@@ -306,6 +340,7 @@ public class FishingCountdown {
 
         String text;
         if (warningState == WarningState.HOOKED) {
+            if (!biteAlertFired) return;
             text = "§c§l!!!";
         } else {
             // INCOMING state: ETA takes priority if enabled and valid, else fall back to text
@@ -340,6 +375,9 @@ public class FishingCountdown {
         hookedStateTicks = 0;
         countdownEtaMs = 0;
         slugLavaEntryMs = 0;
+        awaitingSplashUntilMs = 0;
+        splashConfirmedMs = 0;
+        biteAlertFired = false;
         lastProcessedPacket = null;
     }
 
